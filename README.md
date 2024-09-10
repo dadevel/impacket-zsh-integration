@@ -37,6 +37,8 @@ Find your [Powerlevel10k](https://github.com/romkatv/powerlevel10k) config and m
 ...
 ~~~
 
+Configure your terminal to use [Nerd Fonts](https://www.nerdfonts.com/) or change the icons in [powerlevel10k.zsh](./powerlevel10k.zsh).
+
 # Usage
 
 Configure a SOCKS proxy in the current shell with the help of [proxychains-ng](https://github.com/rofl0r/proxychains-ng).
