@@ -10,6 +10,8 @@ from typing import NoReturn
 
 from impacket.krb5.ccache import CCache
 
+KRBCONF_PREFIX = '/tmp/krbconf-'
+
 
 class CustomParser(ArgumentParser):
     def print_help(self, file=None) -> None:
@@ -25,6 +27,7 @@ def main() -> None:
     parsers = entrypoint.add_subparsers(dest='command', required=True)
 
     parser = parsers.add_parser('import')
+    parser.add_argument('-K', '--kdc', default='', metavar='HOSTNAME|FQDN')
     parser.add_argument('input', nargs='?', default='', metavar='-|base64:KIRBIBLOB|KIRBIFILE')
     parser.add_argument('output', nargs='?', default='', metavar='CCACHEFILE')
 
@@ -32,6 +35,7 @@ def main() -> None:
     parser.add_argument('input', nargs='?', default='', metavar='CCACHEFILE')
 
     parser = parsers.add_parser('set')
+    parser.add_argument('-K', '--kdc', default='', metavar='HOSTNAME|FQDN')
     parser.add_argument('input', nargs=1, default='', metavar='CCACHEFILE')
 
     parser = parsers.add_parser('unset')
@@ -40,6 +44,7 @@ def main() -> None:
     parser.add_argument('input', nargs='?', default='', metavar='CCACHEFILE')
 
     parser = parsers.add_parser('exec')
+    parser.add_argument('-K', '--kdc', default='', metavar='HOSTNAME|FQDN')
     parser.add_argument('input', nargs=1, default='', metavar='CCACHEFILE')
     parser.add_argument('cmdline', nargs=argparse.REMAINDER, metavar='COMMAND...')
 
@@ -83,7 +88,8 @@ def ccache_import(opts: Namespace) -> None:
                         break
 
     ccache.saveFile(filename)
-    print(_generate_exports(filename, domain, user, host))
+    confpath = write_krbconf(domain, opts.kdc)
+    print(_generate_exports(filename, domain, user, host, opts.kdc, confpath))
 
 
 def ccache_export(opts: Namespace) -> None:
@@ -98,11 +104,15 @@ def ccache_set(opts: Namespace) -> None:
     if not ccache:
         raise ValueError('invalid ccache ticket')
     domain, user, host = _extract_user_info(ccache)
-    print(_generate_exports(opts.input[0], domain, user, host))
+    confpath = write_krbconf(domain, opts.kdc)
+    print(_generate_exports(opts.input[0], domain, user, host, opts.kdc, confpath))
 
 
 def ccache_unset(_) -> None:
-    print('unset KRB5CCNAME KRB5CCNAME_REALM KRB5CCNAME_USER KRB5CCNAME_HOST')
+    confpath = os.environ.get('KRB5_CONFIG')
+    if confpath and confpath.startswith(KRBCONF_PREFIX):
+        os.unlink(confpath)
+    print('unset KRB5CCNAME KRB5_CONFIG KRB5CCNAME_DOMAIN KRB5CCNAME_USER KRB5CCNAME_KDC KRB5CCNAME_HOST')
 
 
 def ccache_whoami(opts: Namespace) -> None:
@@ -121,7 +131,8 @@ def ccache_exec(opts: Namespace) -> None:
         raise ValueError('invalid ccache ticket')
     domain, user, host = _extract_user_info(ccache)
     cmdline = ' '.join(shlex.quote(item) for item in opts.cmdline) if opts.cmdline else os.environ.get('SHELL', '/bin/sh')
-    print(_generate_variables(filename, domain, user, host) + ' ' + cmdline)
+    confpath = write_krbconf(domain, opts.kdc)
+    print(_generate_variables(filename, domain, user, host, opts.kdc, confpath) + ' ' + cmdline)
 
 
 def _extract_user_info(ccache: CCache) -> tuple[str, str, str]:
@@ -137,12 +148,42 @@ def _extract_user_info(ccache: CCache) -> tuple[str, str, str]:
     return domain, username, hostname
 
 
-def _generate_exports(path: str, domain: str, user: str, host: str) -> str:
-    return f'export {_generate_variables(path, domain, user, host)}'
+def _generate_exports(path: str, domain: str, user: str, host: str, kdc: str|None, krbconf: str|None) -> str:
+    return f'export {_generate_variables(path, domain, user, host, kdc, krbconf)}'
 
 
-def _generate_variables(path: str, domain: str, user: str, host: str) -> str:
-    return f'KRB5CCNAME={shlex.quote(os.path.realpath(path))} KRB5CCNAME_DOMAIN={shlex.quote(domain)} KRB5CCNAME_USER={shlex.quote(user)} KRB5CCNAME_HOST={shlex.quote(host)}'
+def _generate_variables(path: str, domain: str, user: str, host: str, kdc: str|None, krbconf: str|None) -> str:
+    return f'KRB5CCNAME={shlex.quote(os.path.realpath(path))} KRB5_CONFIG={shlex.quote(krbconf) if krbconf else ''} KRB5CCNAME_DOMAIN={shlex.quote(domain)} KRB5CCNAME_USER={shlex.quote(user)} KRB5CCNAME_KDC={shlex.quote(kdc) if kdc else ''} KRB5CCNAME_HOST={shlex.quote(host)}'
+
+
+def write_krbconf(domain: str, kdc: str) -> str:
+    pid = os.environ.get('SHELL_PID', '0')
+    path = f'{KRBCONF_PREFIX}{pid}.conf'
+    with open(path, 'w') as file:
+        file.write(_generate_krbconf(domain, kdc))
+    return path
+
+
+def _generate_krbconf(domain: str, kdc: str) -> str:
+    if '.' not in kdc:
+        kdc = f'{kdc}.{domain}'
+    return '\n'.join([
+        r'[libdefaults]',
+        r'  dns_lookup_kdc = false',
+        r'  dns_lookup_realm = false',
+        f'  default_realm = {domain.upper()}',
+        r'',
+        r'[realms]',
+        f'  {domain.upper()} = ' + '{',
+        f'    kdc = {kdc.lower()}',
+        f'    admin_server = {kdc.lower()}',
+        f'    default_domain = {domain.lower()}',
+        r'  }',
+        r'',
+        r'[domain_realm]',
+        f'  .{domain.lower()} = {domain.upper()}',
+        f'  {domain.lower()} = {domain.upper()}',
+    ])
 
 
 if __name__ == '__main__':

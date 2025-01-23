@@ -5,6 +5,7 @@ krbconf() {
     else
         declare -r python=python3
     fi
+    declare -x SHELL_PID="$$"
     "${python}" ~/.local/share/impacket-zsh-integration/krbconf.py "$@" | read -r result && eval "${result}"
 }
 
